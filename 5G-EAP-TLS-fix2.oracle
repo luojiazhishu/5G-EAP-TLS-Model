@@ -1,0 +1,104 @@
+#!/usr/bin/python
+
+import re
+import os
+import sys
+debug = True
+
+lines = sys.stdin.readlines()
+lemma = sys.argv[1]
+
+# INPUT:
+# - lines contain a list of "%i:goal" where "%i" is the index of the goal
+# - lemma contain the name of the lemma under scrutiny
+# OUTPUT:
+# - (on stdout) a list of ordered index separated by EOL
+
+
+rank = []             # list of list of goals, main list is ordered by priority
+maxPrio = 110
+for i in range(0,maxPrio):
+  rank.append([])
+if  lemma =="Non_inject_agreement_UDM_UE_supi_noRev" or \
+lemma =="Non_inject_agreement_AUSF_UDM_idSN_noRev" or \
+lemma =="Weak_agreement_UDM_UE_noRev_without_ac" or\
+lemma =="Weak_agreement_UDM_SEAF_noRev_without_ac" or \
+lemma =="Weak_agreement_UDM_UE_noRev" or \
+lemma =="Weak_agreement_UDM_SEAF_noRev" or \
+lemma =="Non_inject_agreement_UE_UDM_idSN_noRev_ATALL_without_ac" or \
+lemma =="Weak_agreement_UE_UDM_noRev_without_ac": 
+  for line in lines:
+    num = line.split(':')[0]   
+    if re.match('.*St_.*', line): rank[108].append(num)
+    elif re.match('.*!KU\( ~sk_A.*', line): rank[107].append(num)
+    elif re.match('.*!KU\( ~sk_UE.*', line): rank[107].append(num)
+    elif re.match('.*!KU\( ~sk_CA.*', line): rank[107].append(num)
+    elif re.match('.*!KU\( ~sk_UDM.*', line): rank[107].append(num)
+    elif re.match('.*certResp.*', line): rank[106].append(num)
+    elif re.match('.*certReq.*', line): rank[106].append(num)
+    elif (re.match('.*!KU\( PRF\(.*', line) and "server_finished" in line): rank[105].append(num)
+    elif (re.match('.*\'authReq_confirm\'.*', line) and "server_finished" in line): rank[105].append(num)
+    elif re.match('.*\'authReq_succ\'.*', line): rank[105].append(num)
+    elif re.match('.*\'agresp\'.*', line): rank[104].append(num)
+    elif re.match('.*\'authReq_cert\'.*', line): rank[103].append(num)
+    elif re.match('.*!KU\( ~Rprekey.*', line): rank[102].append(num)
+    elif re.match('.*!KU\( Rprekey.*', line): rank[102].append(num)
+    elif re.match('.*!KU\( ~Rausf.*', line): rank[102].append(num)
+    elif re.match('.*!KU\( ~Rue.*', line): rank[102].append(num)
+    elif re.match('.*!KU\( ~supi.*', line): rank[102].append(num)
+    elif re.match('.*!KU\( hash\(.*', line): rank[101].append(num)
+    elif re.match('.*!KU\( sign\(hash\(.*', line): rank[100].append(num)
+    elif (re.match('.*!KU\( KDF\(<PRF\(.*', line)): rank[99].append(num)
+    elif (re.match('.*!KU\( PRF\(Rue.*', line) ): rank[98].append(num)
+    elif (re.match('.*!KU\( PRF\(~Rue.*', line) ): rank[98].append(num)
+    elif re.match('.*!KU\( sign\(<\$idUE.*', line): rank[97].append(num)
+    elif re.match('.*!KU\( sign\(<\$idAUSF.*', line): rank[96].append(num)
+    elif (re.match('.*!KU\( PRF\(.*', line) and "server_finished" not in line): rank[95].append(num)
+    elif re.match('.*!KU\( aenc\(~Rprekey.*', line): rank[93].append(num)
+    elif re.match('.*!KU\( aenc\(<~supi.*', line): rank[90].append(num)
+    elif re.match('.*\'air\'.*', line): rank[89].append(num)
+    elif re.match('.*\'agr\'.*', line): rank[88].append(num)
+    elif (re.match('.*!KU\( PRF\(.*', line) and "server_finished" in line): rank[86].append(num)
+    elif re.match('.*\'authReq\'.*', line): rank[85].append(num)
+    elif re.match('.*\'authResp\'.*', line): rank[84].append(num)
+    elif re.match('.*\'authResp_prekey\'.*', line): rank[80].append(num)
+    elif re.match('.*\'seaf_key_confirm\'.*', line): rank[79].append(num)
+    elif re.match('.*!KU\( sign\(.*', line): rank[77].append(num)
+
+
+elif "secret" in lemma or \
+( ("agreement" in lemma) and "Non_inject_agreement_UDM_AUSF_idSN" not in lemma):
+  for line in lines:
+    num = line.split(':')[0]   
+    if re.match('.*St_.*', line): rank[108].append(num)
+    elif re.match('.*!KU\( ~sk_A.*', line): rank[106].append(num)
+    elif re.match('.*!KU\( ~sk_UE.*', line): rank[106].append(num)
+    elif re.match('.*!KU\( ~sk_CA.*', line): rank[106].append(num)
+    elif re.match('.*!KU\( ~sk_UDM.*', line): rank[106].append(num)
+    elif re.match('.*certResp.*', line): rank[105].append(num)
+    elif re.match('.*certReq.*', line): rank[105].append(num)
+    elif re.match('.*\'authReq_succ\'.*', line): rank[104].append(num)
+    elif (re.match('.*!KU\( KDF\(PRF\(.*', line)): rank[104].append(num)
+    elif (re.match('.*!KU\( PRF\(.*', line)): rank[104].append(num)
+    elif re.match('.*\'agresp\'.*', line): rank[103].append(num)
+    elif re.match('.*\'authReq_cert\'.*', line): rank[102].append(num)
+    elif re.match('.*!KU\( ~Rprekey.*', line): rank[101].append(num)
+    elif re.match('.*!KU\( Rprekey.*', line): rank[100].append(num)
+    elif re.match('.*!KU\( aenc\(~Rprekey.*', line): rank[99].append(num)
+    elif re.match('.*!KU\( hash\(.*', line): rank[98].append(num)
+    elif re.match('.*!KU\( sign\(hash\(.*', line): rank[97].append(num)
+    elif re.match('.*!KU\( sign\(<\$idUE.*', line): rank[90].append(num)
+    elif re.match('.*!KU\( sign\(<idUE.*', line): rank[90].append(num)
+    elif (re.match('.*!KU\( PRF\(PRF\(.*', line) and ("server_finished" not in line)): rank[89].append(num)
+    elif re.match('.*!KU\( sign\(<\$idAUSF.*', line): rank[82].append(num)
+    elif re.match('.*\'authResp_prekey\'.*', line): rank[80].append(num)
+    elif re.match('.*\'seaf_key_confirm\'.*', line): rank[79].append(num)
+
+else:
+  exit(0)
+
+# Ordering all goals by ranking (higher first)
+for listGoals in reversed(rank):
+  for goal in listGoals:
+    sys.stderr.write(goal)
+    print goal
