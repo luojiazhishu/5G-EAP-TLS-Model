@@ -1,0 +1,1509 @@
+//This is a Tamarin model of 5G EAP-TLS_fix
+theory 5G_EAP_TLS_fix2
+begin
+
+builtins: asymmetric-encryption, signing
+functions: PRF/3, hash/1, KDF/1
+
+/************************************************************************/
+/*    Channel: SEAF <-> AUSF, AUSF <-> UDM, UE <-> CA, AUSF <-> CA      */
+/************************************************************************/
+// secure channel abstraction 
+// can provide both confidential and authentic protection
+rule send_secure:
+	[Out_S(<channelname,SendType,ReceiveType>,A,B,m)]
+	-->
+	[Sec(<channelname,SendType,ReceiveType>,A,B,m)]
+
+rule receive_secure:
+	[Sec(<channelname,SendType,ReceiveType>,A,B,m)]
+	-->
+	[In_S(<channelname,SendType,ReceiveType>,A,B,m)]
+
+/************************************************************************/
+/*                            Helpful Lemmas                            */
+/************************************************************************/
+// The source lemmas are helpful to solve partial deconstructions left
+lemma pk_ausf_source[sources]:
+"(All pk  #i.
+	Receive_pk_AUSF(pk) @ i
+	==>
+	  (Ex #j. Source_Pk(pk) @ j& #j < #i)
+    | (Ex #j. KU(pk)@ #j & #j < #i ))"
+
+lemma cert_ausf_source[sources]:
+"(All cert  #i.
+	Receive_cert_AUSF(cert) @ i
+	==>
+	  (Ex #j. Source_Cert(cert) @ j & #j < #i)
+    | (Ex #j. KU(cert)@ #j & #j < #i ))"
+
+lemma rand_ausf_source[sources]:
+"(All rand  #i.
+	Receive_rand_ausf(rand) @ i
+	==>
+	  (Ex #j. Rand_ausf_src(rand) @ j& #j < #i)
+    | (Ex #j. KU(rand)@ #j & #j < #i ))"
+
+lemma encrypt_hk_source[sources]:
+ "(All hk #i.
+	Receive_encrypt_hk(hk) @ i
+	==>
+	  (Ex #j. Encrypt_hk_src( hk ) @ j& j < i)
+	| (Ex #j. KU(hk) @ j & j < i))"
+
+
+/************************************************************************/
+/*                          Attacker Capability                         */
+/************************************************************************/
+//Compromise UE to obtain private information
+rule Reveal_UE[color=ff0033]:	
+    [ !Ltk_UE(idUE, supi, ltk, idCA, pk_CA) ] 
+    --[ Reveal(<'UE', supi>), Reveal(<'UE', idUE>) ]-> 
+    [ Out(<supi,ltk>) ]
+
+/************************************************************************/
+/*                             Restrictions                             */
+/************************************************************************/
+restriction Equality:
+    "All x y #i. Eq(x,y) @ i ==> x = y"
+
+restriction Inequality:
+    "All x #i. Neq(x,x) @ #i ==> F"
+
+restriction unique:
+    "All x #i #j. Unique(x) @#i & Unique(x) @#j ==> #i = #j"
+
+//One SN can only initialize once
+restriction ServNet_once:  
+	" All SN #i #j. ServNet(SN)@i & ServNet(SN)@j ==> #i = #j "
+
+//One AUSF can only initialize once
+restriction AUSF_Homenet_once:  
+	" All AUSF #i #j. AUSF_ID(AUSF)@i & AUSF_ID(AUSF)@j ==> #i = #j "
+
+//One AUSF can only link one UDM
+restriction UDM_HomeNet_once_link: 
+	" All AUSF UDM UDM1 #i #j. UDM_HomeNet(AUSF, UDM)@i & UDM_HomeNet(AUSF, UDM1)@j ==> #i = #j "
+
+//One UDM can only initialize once
+restriction UDM_HomeNet_once:
+	" All UDM #i #j. UDM_ID(UDM)@i & UDM_ID(UDM)@j ==> #i = #j "
+
+//One UE can only have one supi
+ restriction UE_Init_once: 
+	" All UE supi supi1 #i #j. UE_Init(UE, supi)@i & UE_Init(UE, supi1)@j ==> #i = #j "
+
+//One SEAF can only associate once with one AUSF 
+restriction Associate_SEAF:
+	" All  idAUSF idSN #i #j. Associate_SEAF_AUSF(idSN, idAUSF)@i & Associate_SEAF_AUSF(idSN, idAUSF)@j ==> (#i = #j)"  
+
+//One UE can only subscribe to the service of one UDM 
+restriction subscribe_once:
+	" All UDM1 UDM2 supi #i #j. Subscribe(supi, UDM1)@i & Subscribe(supi, UDM2)@j ==> (#i = #j)"   
+
+restriction OnlyOnce:
+    "All #i #j. OnlyOnce()@#i & OnlyOnce()@#j ==> #i = #j"
+
+/************************************************************************/
+/*                            Register Rules                            */
+/************************************************************************/
+// Register a Certificate Authority
+rule CA_register[color=ff00ff]:
+    let
+        sign_CA = sign(<$idCA, pk(~sk_CA)>, ~sk_CA)  
+        cert_CA = <$idCA, pk(~sk_CA), sign_CA>
+    in
+    [ Fr(~sk_CA) ] 
+    --[OnlyOnce()]->
+    [ !Ltk_CA($idCA, ~sk_CA)
+    , !Cert_CA(cert_CA)
+    , Out(<$idCA, pk(~sk_CA)>) 
+    ]
+
+//Register a UE to send the certificate request
+rule UE_register[color=00cc66]:
+    let
+        cert_CA = <$idCA, pk_CA, sign_CA>
+    in
+    [ Fr(~supi), Fr(~sk_UE), !Cert_CA(cert_CA) ]
+    --[ UE_Init($idUE, ~supi)
+      , Eq(verify(sign_CA, <$idCA, pk_CA>, pk_CA),true)]->
+    [  !Ltk_UE($idUE, ~supi, ~sk_UE, $idCA, pk_CA)
+    , Out(<$idUE, pk(~sk_UE)>)
+    , Out_S(<'Cert_Channel','Agent','CA'>, $idUE, $idCA, <'certReq', $idUE, pk(~sk_UE)>)
+    ]
+
+//Register a AUSF to send the certificate request
+rule AUSF_register[color=ccffff]:
+    let
+        cert_CA = <$idCA, pk_CA, sign_CA>
+    in
+    [ Fr(~sk_AUSF), !Cert_CA(cert_CA) ]
+    --[Source_Pk(pk(~sk_AUSF)), Eq(verify(sign_CA, <$idCA, pk_CA>, pk_CA),true)]->
+    [ !Ltk_AUSF($idAUSF, ~sk_AUSF, $idCA, pk_CA)
+    , Out(<$idAUSF, pk(~sk_AUSF)>)
+    , Out_S(<'Cert_Channel','Agent','CA'>, $idAUSF, $idCA, <'certReq', $idAUSF, pk(~sk_AUSF)>)
+    ]
+
+
+//CA sign for every Users include UE and AUSF
+rule CA[color=ff00ff]:
+    let
+        sign_A = sign(<$A, pk_A, $idCA>, ~sk_CA)  
+        Cert_A = <$A, pk_A, $idCA, sign_A>
+    in
+    [In_S(<'Cert_Channel','Agent','CA'>, $A, $idCA, <'certReq', $A, pk_A>), !Ltk_CA($idCA, ~sk_CA)]
+    --[Source_Cert(Cert_A), Neq($idCA, $A)]->
+    [Out_S(<'Cert_Channel','CA','Agent'>, $idCA, $A, <'certResp', Cert_A>)]
+
+/************************************************************************/
+/*                              Init Rules                              */
+/************************************************************************/
+// Initialize a serving network/SEAF
+rule init_servNet[color=99bfbf]:
+	let 
+		SNName = <'5G', 'PLMNID', $idSN>
+	in
+	[] // idSN denotes NID and the identifier of serving network/SEAF
+	--[ ServNet($idSN)]->
+	[!Init_SEAF($idSN, SNName)
+	, Out(SNName)]  
+
+// Initialize a UDM 
+rule init_UDM[color=ff9999]:
+    [ Fr(~sk_UDM) ]
+    --[UDM_ID($idUDM)]->
+    [ !Ltk_UDM($idUDM, ~sk_UDM)
+    , Out(<$idUDM, pk(~sk_UDM)>)
+    ]
+
+// Initialize  AUSF to receive certificate
+rule init_AUSF[color=ccffff]:     
+    let
+        cert_AUSF =  <$idAUSF, pk(~sk_AUSF), $idCA, sign_AUSF>
+    in
+	[!Ltk_AUSF($idAUSF, ~sk_AUSF, $idCA, pk_CA), !Ltk_UDM($idUDM, ~sk_UDM), In_S(<'Cert_Channel','CA','Agent'>, $idCA, $idAUSF, <'certResp', cert_AUSF>)]
+	--[  AUSF_ID($idAUSF), UDM_HomeNet($idAUSF, $idUDM), Neq($idAUSF, $idCA)
+	   , Eq(verify(sign_AUSF, <$idAUSF, pk(~sk_AUSF), $idCA>, pk_CA),true)]->
+	[ !Init_AUSF($idAUSF, pk_CA, cert_AUSF, ~sk_AUSF, $idUDM)]
+
+//Associate SEAF with AUSF, AUSF and UDM
+rule Associate_SAU[color=00b4ff]:  
+	[!Init_AUSF($idAUSF, pk_CA, cert_AUSF, ~sk_AUSF, $idUDM), !Init_SEAF($idSN, SNName), !Ltk_UDM($idUDM, ~sk_UDM)]
+    --[  Associate_SEAF_AUSF($idSN, $idAUSF), Assoc()]->  
+	[!AUSF($idAUSF, pk_CA, cert_AUSF, $idSN, ~sk_AUSF, $idUDM), !SEAF($idSN, SNName, $idAUSF), !AUSF_UDM($idAUSF, $idUDM) ]
+
+// Initialize UE to receive certificate
+rule init_UE[color=00cc66]:
+    let
+        cert_UE =  <$idUE, pk(~sk_UE), $idCA, sign_UE>
+    in 
+    [  !Ltk_UE($idUE, ~supi, ~sk_UE, $idCA, pk_CA), !Ltk_UDM($idUDM, ~sk_UDM)
+     , In_S(<'Cert_Channel','CA','Agent'>, $idCA, $idUE, <'certResp', cert_UE>)]
+    --[ Unique($idUE),  Subscribe(~supi, $idUDM) , Eq(verify(sign_UE, <$idUE, pk(~sk_UE), $idCA>, pk_CA),true)]->
+    [  !UE_UDM($idUE, $idUDM, ~supi, pk(~sk_UE), pk(~sk_UDM))
+    , !UE($idUE,  ~supi, ~sk_UE, pk_CA, cert_UE, $idUDM, pk(~sk_UDM))
+    ]
+
+/************************************************************************/
+/*                            Protocol Rules                            */
+/************************************************************************/
+
+// -> Registration Request
+rule ue_send_regReq[color=00cc66]:
+	let
+		Rue = ~Rue
+		conc_supi = aenc{<supi, Rue>}pk_UDM
+		suci = < conc_supi, idUDM>
+		msgOut = suci
+        UE_tid = ~UE_tid
+	in
+	[ !UE(idUE,  supi, sk_UE, pk_CA, cert_UE, idUDM, pk_UDM)
+	, Fr(~Rue)
+	, Fr(~UE_tid)]
+	--[
+	   Start_UE_Session(supi)
+	 , Secret_supiUE(supi)
+	 , Running(supi, idUDM, <'UDM', 'UE', <'supi', supi>>)  
+     , Honest(supi)
+     , Honest(idUDM)
+	]->
+	[ St_1_UE(UE_tid, idUE, idUDM, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue)   
+	, Out(msgOut)]
+
+// -> Registration Request -> Authentication Initiation Request
+rule seaf_receive_regReq_send_air[color=99bfbf]:
+	let
+		msgIn = <conc_supi,  idUDM>
+		suci = msgIn
+		msgOut = <suci, SNName >
+        SEAF_tid = ~SEAF_tid
+	in
+	[ !SEAF(idSN, SNName, idAUSF)
+	, Fr(~SEAF_tid)
+	, In(suci)]
+	--[
+		Start_SEAF_Session(idSN)
+      , Running(idSN, idUDM, <'UDM', 'SEAF', <'idSN', idSN>>)
+      , Running(idSN, idAUSF, <'AUSF', 'SEAF', <'idSN', idSN>>)
+	]->
+	[ St_1_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM)
+	, Out_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'air', msgOut>)]
+
+// -> Authentication Initiation Request -> Authentication Get Request
+rule ausf_receive_air_send_agr[color=ccffff]:
+	let
+		SNName = <'5G', 'PLMNID', idSN>
+		suci =<conc_supi, idUDM>
+		msgIn = <suci, SNName>   
+		msgOut = <conc_supi, idUDM, SNName>
+        AUSF_tid = ~AUSF_tid
+	in
+	[ !AUSF(idAUSF, pk_CA, cert_AUSF, idSN, sk_AUSF, idUDM)
+	, Fr(~AUSF_tid)
+	, In_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'air', msgIn>)]
+	--[
+		Start_AUSF_Session(idAUSF)
+	  , Running(idAUSF, idUDM, <'UDM', 'AUSF', <'idSN', idSN>>)
+	  , Commit(idAUSF, idSN, <'AUSF', 'SEAF', <'idSN', idSN>>)
+	  , Honest(idSN)
+	  , Honest(idAUSF)
+      , Honest(idUDM)
+	]->
+	[ St_1_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, SNName, conc_supi)
+	, Out_S(<'AUSF_UDM','AUSF','UDM'>, idAUSF, idUDM, <'agr', msgOut>)]
+
+// -> Authentication Get Request -> Authentication Get Response
+rule UDM_receive_air_send_agresp[color=ff9999]:
+	let
+		SNName = <'5G', 'PLMNID', idSN>
+		conc_supi = aenc{<supi, Rue>}pk(sk_UDM)
+		msgIn = <conc_supi, idUDM, SNName>
+        msgOut = <idSN, idUE, supi, 'Use_EAP_TLS'>  //fix point one
+        UDM_tid = ~UDM_tid
+        in
+	[ !Ltk_UDM(idUDM, sk_UDM)	
+	, !AUSF_UDM(idAUSF, idUDM)       
+	, !UE_UDM(idUE, idUDM, supi, pk_UE, pk(sk_UDM))
+	, Fr(~UDM_tid)
+	, In_S(<'AUSF_UDM','AUSF','UDM'>, idAUSF, idUDM, <'agr', msgIn>)
+	]
+	--[
+		Start_UDM_Session(idUDM)
+	  , Secret_supiUDM(supi)
+      , Commit(idUDM, supi, <'UDM', 'UE', <'supi', supi>>)    
+      , Commit(idUDM, idAUSF, <'UDM', 'AUSF', <'idSN', idSN>>)
+      , Commit(idUDM, idSN, <'UDM', 'SEAF', <'idSN', idSN>>)
+      , Running(idUDM, idAUSF, <'AUSF', 'UDM', <'idSN', idSN>>)  
+      , Running(idUDM, idAUSF, <'AUSF', 'UDM', <'supi', supi>>)  
+      , Running(idUDM, supi, <'UE', 'UDM', <'supi', supi>>)  
+	  , Running(idUDM, supi, <'UE', 'UDM', <'idSN', idSN>>) 
+	  , Running(idUDM, idSN, <'SEAF', 'UDM', <'supi', supi>>) 
+      , Honest(supi)
+	  , Honest(idSN)
+      , Honest(idAUSF)
+      , Honest(idUDM) 
+	]->
+	[   St_1_UDM(UDM_tid, idUDM, sk_UDM, idAUSF, idUE, supi, idSN)
+      , Out_S(<'AUSF_UDM','UDM','AUSF'>, idUDM, idAUSF, <'agresp', msgOut>)]   
+
+// -> Authentication Get Response -> Authentication Reqest
+rule ausf_receive_agresp_send_authReq[color=ccffff]:
+	let
+		SNName = <'5G', 'PLMNID', idSN>
+		msgIn = <idSN, idUE, supi, 'Use_EAP_TLS'>
+		msgOut = <idUDM, 'EAP_TLS_START'>  //fix point two
+	in
+	[ St_1_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, SNName, conc_supi)
+	, In_S(<'AUSF_UDM','UDM','AUSF'>, idUDM, idAUSF, <'agresp', msgIn>)]
+	--[
+        Commit(idAUSF, idUDM, <'AUSF', 'UDM', <'supi', supi>>) 			
+      , Commit(idAUSF, idUDM, <'AUSF', 'UDM', <'idSN', idSN>>) 			
+      , Running(idAUSF, supi, <'UE', 'AUSF', <'supi', supi>>)             
+	  , Running(idAUSF, supi, <'UE', 'AUSF', <'idSN', idSN>>)
+      , Running(idAUSF, idUDM, <'UDM', 'AUSF', <'supi', supi>>)         
+	  , Honest(supi)
+      , Honest(idAUSF)
+      , Honest(idUDM) 
+	]->
+	[ St_2_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, SNName, idUE, supi)
+	, Out_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq', msgOut>)]
+
+// -> Authentication Request -> Authentication Request
+rule seaf_forward_authReq[color=99bfbf]:
+	let
+		msgIn =  <idUDM, 'EAP_TLS_START'>
+		msgOut =  msgIn
+	in
+	[ St_1_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM)
+	, In_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq', msgIn>)]
+	-->
+	[ St_2_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM)
+	, Out(msgOut)]
+
+// -> Authentication Request -> Authentication Response 
+rule ue_receive_authReq_send_authResp[color=00cc66]:
+	let
+		Rue1 = ~Rue1
+		msgIn =  'EAP_TLS_START' 
+		msgOut = <Rue1, 'Methods_UE'>
+	in
+	[ St_1_UE(UE_tid, idUE, idUDM, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue)
+    , Fr(~Rue1)
+	, In(msgIn)
+    ]
+	-->
+	[ St_2_UE(UE_tid, idUE, idUDM, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1)  //get idSN
+	, Out(msgOut)]
+
+// -> Authentication Response -> Authentication Response
+rule seaf_forward_authResp[color=99bfbf]:
+	let
+		msgIn = <Rue1, 'Methods_UE'>
+		msgOut = msgIn
+	in
+	[ St_2_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM)
+	, In(msgIn)]
+	-->
+	[ St_3_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1)
+	, Out_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'authResp', msgOut>)]
+
+// -> Authentication Response -> Authentication Request
+rule ausf_receive_authResp_send_authReq_cert[color=ccffff]:
+    let
+		SNName = <'5G', 'PLMNID', idSN>
+		Rausf = ~Rausf
+        msgIn =  <Rue1, 'Methods_UE'>      
+        cert_AUSF = <idAUSF, pk(sk_AUSF), idCA, sign_AUSF>                    
+        msgOut =  <Rausf, cert_AUSF, 'Method_AUSF'>
+    in
+	[  St_2_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, SNName, idUE, supi)
+     , Fr(~Rausf)
+     , In_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'authResp', msgIn>)
+	]
+	--[
+	    Rand_ausf_src(Rausf)
+	]->
+	[  St_3_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, Rausf, SNName, idUE, supi, Rue1) 
+    ,  Out_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq_cert', msgOut>)]   
+
+// -> Authentication Request -> Authentication Request
+rule seaf_forward_authReq_cert[color=99bfbf]:
+	let
+        cert_AUSF = <idAUSF, pk_AUSF, idCA, sign_AUSF>
+		msgIn = <Rausf, cert_AUSF, 'Method_AUSF'>
+		msgOut = msgIn
+	in
+	[ St_3_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1)
+	, In_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq_cert', msgIn>)]
+	--[
+	      Receive_rand_ausf(Rausf) 
+		, Receive_cert_AUSF(cert_AUSF)
+        , Receive_pk_AUSF(pk_AUSF)
+	]->
+	[ St_4_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM,  Rue1, Rausf)
+	, Out(msgOut)]
+
+// -> Authentication Request -> Authentication Response
+rule ue_receive_authReq_cert_send_authResp_prekey[color=00cc66]:    
+    let 
+		cert_UE = <idUE, pk(sk_UE), idCA, sign_UE>
+		cert_AUSF =  <idAUSF, pk_AUSF, idCA, sign_AUSF>    
+		msgIn =  <Rausf, cert_AUSF, 'Method_AUSF'>
+        Rprekey = ~Rprekey
+		Ksession = PRF(Rue1, Rprekey, Rausf)
+		Handshake_UE = < Rue1, Rausf, cert_UE, cert_AUSF, Rprekey>   
+		hash_Handshake_UE = hash(Handshake_UE)
+		encry_Rprekey =  aenc(Rprekey, pk_AUSF)
+		sign_Handshake_UE = sign(hash_Handshake_UE, sk_UE)
+		hash_Handshake_UE1 = hash(<Handshake_UE,sign_Handshake_UE>)
+		encry_Handshake_UE = PRF(Ksession,'client_finished',hash_Handshake_UE1)
+		msgOut = <'Rekey', encry_Rprekey, cert_UE, sign_Handshake_UE, encry_Handshake_UE>
+	in
+	[ St_2_UE(UE_tid, idUE, idUDM, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1)
+    , Fr(~Rprekey)
+    , In(msgIn)
+    ]
+	--[
+        Eq(verify(sign_AUSF, <idAUSF, pk_AUSF, idCA>, pk_CA),true)
+      , Running(supi, idAUSF, <'AUSF', 'UE', <'supi', supi>>)  
+      , Honest(supi)
+      , Honest(idAUSF) 
+	]->
+	[ St_3_UE(UE_tid, idUE, idUDM, idAUSF, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1, Rprekey, Rausf, pk_AUSF, Ksession, Handshake_UE)  
+	, Out(msgOut)]      
+
+// -> Authentication Response -> Authentication Response
+rule seaf_forward_authResp_prekey[color=99bfbf]:
+	let	
+		cert_UE = <idUE, pk_UE, idCA, sign_UE>
+    	msgIn = <'Prekey', encry_Rprekey, cert_UE, sign_Handshake_UE, encry_Handshake_UE>
+		msgOut = msgIn
+	in
+	[ St_4_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1, Rausf)
+	, In(msgIn)]
+	-->
+	[ St_5_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM,  Rue1, Rausf, encry_Rprekey)
+	, Out_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'authResp_prekey', msgOut>)]
+
+// -> Authentication Response -> Authentication Request
+rule ausf_receive_authResp_prekey_send_authReq_confirm[color=ccffff]:  
+    let
+		SNName = <'5G', 'PLMNID', idSN>
+		cert_AUSF = <idAUSF, pk(sk_AUSF), idCA, sign_AUSF> 
+		cert_UE = <idUE, pk_UE, idCA, sign_UE> 
+       	Ksession = PRF(Rue1, Rprekey, Rausf)
+		Handshake_UE = <Rue1, Rausf, cert_UE, cert_AUSF, Rprekey>   //implicit compare Handshake_UE and Handshake_AUSF
+		hash_Handshake_UE = hash(Handshake_UE)
+		hash_Handshake_UE1 = hash(<Handshake_UE,sign_Handshake_UE>)  //sign_Handshake_UE is the verify data
+		encry_Rprekey =  aenc(Rprekey, pk(sk_AUSF))
+		encry_Handshake_UE = PRF(Ksession,'client_finished', hash_Handshake_UE1)
+		msgIn = <'Prekey', encry_Rprekey, cert_UE, sign_Handshake_UE, encry_Handshake_UE>
+		Handshake_AUSF = <Handshake_UE,sign_Handshake_UE,encry_Handshake_UE>
+        hash_Handshake_AUSF = hash(Handshake_AUSF)
+        encry_Handshake_AUSF = PRF(Ksession,'server_finished', hash_Handshake_AUSF)
+        msgOut = encry_Handshake_AUSF
+    in
+	[  St_3_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, Rausf, SNName, idUE, supi, Rue1)
+	 , In_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'authResp_prekey', msgIn>)
+	]
+	--[
+	  Eq(verify(sign_Handshake_UE,hash_Handshake_UE,pk_UE),true) 
+    , Eq(verify(sign_UE, <idUE, pk_UE, idCA>, pk_CA),true)
+	, Commit(idAUSF, supi, <'AUSF', 'UE', <'supi', supi>>) 
+	, Encrypt_hk_src(msgOut)
+    , Honest(supi)
+    , Honest(idAUSF)
+	]->
+	[  St_4_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, Rausf, SNName, idUE, supi, Rue1, Rprekey, pk_UE, Ksession)
+    ,  Out_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq_confirm', msgOut>)]  
+
+// -> Authentication Request -> Authentication Request
+rule seaf_forward_authReq_confirm[color=99bfbf]:
+	let	
+		msgIn = encry_Handshake_AUSF
+		msgOut = msgIn
+	in
+	[ St_5_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF,  idUDM, Rue1, Rausf, encry_Rprekey)
+	, In_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq_confirm', msgIn>)]
+	--[
+	     Receive_encrypt_hk(msgIn)
+	]->
+	[ St_6_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF,  idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF)
+	, Out(msgOut)]
+
+// -> Authentication Request -> Authentication Response
+rule ue_receive_authReq_confirm_send_authResp_confirm[color=00cc66]:     
+    let 
+        hash_Handshake_UE = hash(Handshake_UE)
+	    sign_Handshake_UE = sign(hash_Handshake_UE, sk_UE)
+	    hash_Handshake_UE1 = hash(<Handshake_UE,sign_Handshake_UE>)  //sign_Handshake_UE is the verify data
+	    encry_Handshake_UE = PRF(Ksession,'client_finished', hash_Handshake_UE1)
+	    Handshake_AUSF = <Handshake_UE, sign_Handshake_UE, encry_Handshake_UE>
+        hash_Handshake_AUSF = hash(Handshake_AUSF)
+        encry_Handshake_AUSF = PRF(Ksession,'server_finished', hash_Handshake_AUSF)
+		msgIn = encry_Handshake_AUSF
+		msgOut = 'EAP_TLS'
+	in
+	[
+      St_3_UE(UE_tid, idUE, idUDM, idAUSF, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1, Rprekey, Rausf, pk_AUSF, Ksession, Handshake_UE)  
+    , In(msgIn) 
+    ]
+	-->
+	[ St_4_UE(UE_tid, idUE, idUDM, idAUSF, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1, Rprekey, Rausf, pk_AUSF, Ksession, Handshake_AUSF)  
+	, Out(msgOut)]     
+
+// -> Authentication Response -> Authentication Response
+rule seaf_forward_authResp_confirm[color=99bfbf]:
+	let	
+		msgIn = 'EAP_TLS' 
+		msgOut = msgIn
+	in
+	[ St_6_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF,  idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF)
+	, In(msgIn)]
+	-->
+	[ St_7_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF,  idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF)
+	, Out_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'authResp_confirm', msgOut>)]
+
+// -> Authentication Response -> Authentication Request
+rule ausf_receive_authResp_confirm_send_authReq_succ[color=ccffff]:   
+    let
+		msgIn = 'EAP_TLS'
+		Kseaf = KDF(<Ksession, idSN>)
+		msgOut = <'Success', idUE, supi, Kseaf>			
+		SNName = <'5G', 'PLMNID', idSN>
+    in
+	[  St_4_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, Rausf, SNName, idUE, supi, Rue1, Rprekey, pk_UE, Ksession)
+	 , In_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'authResp_confirm', msgIn>)
+	]
+	--[
+		 Secret_supiAUSF(supi)     
+	   , Secret_KseafAUSF(Kseaf)
+	   , Running(idAUSF, idSN, <'SEAF', 'AUSF', <'Kseaf', Kseaf>>)   //SEAF-AUSF信道安全的情况下
+	   , Running(idAUSF, idSN, <'SEAF', 'AUSF', <'supi', supi>>)
+	   , Running(idAUSF, supi, <'UE', 'AUSF', <'Kseaf', Kseaf>>)
+       , Honest(supi)
+       , Honest(idSN)
+       , Honest(idAUSF)
+	]->
+	[ St_5_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, Rausf, SNName, idUE, supi, Rue1, Rprekey, pk_UE, Ksession, Kseaf)
+    , Out_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq_succ', msgOut>)]  
+
+// -> Authentication Request -> Authentication Request
+rule seaf_receive_authReq_send_succ[color=99bfbf]:
+	let
+		SNName = <'5G', 'PLMNID', idSN>
+		msgIn =  <'Success', idUE, supi, Kseaf>
+		msgOut = <'Success', SNName>
+	in
+	[ St_7_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF)
+	, In_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'authReq_succ', msgIn>)]
+	--[
+		Secret_supiSEAF(supi)
+	  , Secret_KseafSEAF(Kseaf)
+      , Commit(idSN, idAUSF, <'SEAF', 'AUSF', <'Kseaf', Kseaf>>)
+	  , Commit(idSN, idAUSF, <'SEAF', 'AUSF', <'supi', supi>>)
+	  , Commit(idSN, idUDM, <'SEAF', 'UDM', <'supi', supi>>)
+      , Running(idSN, idAUSF, <'AUSF', 'SEAF', <'supi', supi>>) 
+      , Running(idSN, idAUSF, <'AUSF', 'SEAF', <'Kseaf', Kseaf>>)
+	  , Running(idSN, supi, <'UE', 'SEAF', <'Kseaf', Kseaf>>)
+	  , Running(idSN, supi, <'UE', 'SEAF', <'supi', supi>>)
+	  , Running(idSN, supi, <'UE', 'SEAF', <'idSN', idSN>>)
+	  , Running(idSN, idUDM, <'UDM', 'SEAF', <'supi', supi>>)
+      , Honest(supi)
+      , Honest(idSN)
+      , Honest(idAUSF)
+      , Honest(idUDM)
+	]->
+	[ St_8_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF, idUE, supi, Kseaf)
+    , Out(msgOut) ]
+
+// -> Authentication Request -> Key confirmation
+rule ue_receive_succ_send_key_confirmation[color=00cc66]:       
+    let 
+        SNName = <'5G', 'PLMNID', idSN>
+		Kseaf = KDF(<Ksession, idSN>)
+        msgIn = <'Success', SNName>
+        msgOut = hash(<Kseaf, 'UE'>)
+	in
+	[ 
+      St_4_UE(UE_tid, idUE, idUDM, idAUSF, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1, Rprekey, Rausf, pk_AUSF, Ksession, Handshake_AUSF)  
+    , In(msgIn)
+    ]
+	--[ 
+	    Secret_KseafUE(Kseaf)  
+	  , Running(supi, idAUSF, <'AUSF', 'UE', <'idSN', idSN>>)       
+      , Running(supi, idAUSF, <'AUSF', 'UE', <'Kseaf', Kseaf>>) 
+	  , Running(supi, idUDM, <'UDM', 'UE', <'idSN', idSN>>)         
+      , Running(supi, idSN, <'SEAF', 'UE', <'supi', supi>>)	
+      , Running(supi, idSN, <'SEAF', 'UE', <'idSN', idSN>>)	
+	  , Running(supi, idSN, <'SEAF', 'UE', <'Kseaf', Kseaf>>)
+	  , Commit(supi, idSN, <'UE', 'SEAF', <'supi', supi>>)
+	  , Commit(supi, idSN, <'UE', 'SEAF', <'idSN', idSN>>)
+	  , Commit(supi, idSN, <'UE', 'SEAF', <'Kseaf', Kseaf>>)
+	  , Commit(supi, idAUSF, <'UE', 'AUSF', <'Kseaf', Kseaf>>)
+	  , Commit(supi, idAUSF, <'UE', 'AUSF', <'idSN', idSN>>) 
+      , Commit(supi, idUDM, <'UE', 'UDM', <'idSN', idSN>>) 
+	  , Honest(supi)
+	  , Honest(idSN)
+	  , Honest(idAUSF)
+	]->
+	[   St_5_UE(UE_tid, idUE, idUDM, idAUSF, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1, Rprekey, Rausf, pk_AUSF, Ksession, Handshake_AUSF, idSN, Kseaf) 
+	  , Out(msgOut)]        
+
+// -> Key confirmation -> Key confirmation
+rule seaf_send_key_confirmation[color=99bfbf]:
+    [ St_8_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF, idUE, supi, Kseaf)
+	    , In(hash(<Kseaf, 'UE'>))]
+    --[
+		CommitConf(idSN, supi, <'SEAF', 'UE', <'Kseaf', Kseaf>>)
+	  ,	CommitConf(idSN, supi, <'SEAF', 'UE', <'supi', supi>>)
+	  ,	CommitConf(idSN, supi, <'SEAF', 'UE', <'idSN', idSN>>)
+	  , Honest(supi)
+	  , Honest(idAUSF)
+	  ,	Honest(idSN)
+	  , Honest(idUDM)
+	]->
+	[    St_9_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF, idUE, supi, Kseaf)
+	   , Out_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'seaf_key_confirm', hash(hash(<Kseaf, 'SEAF'>))>)]
+
+// -> Key confirmation -> Key confirmation + Success confirmation
+rule ausf_send_key_success_confirmation[color=ccffff]:
+	    let	
+        SNName = <'5G', 'PLMNID', idSN>	
+        in
+       	[ St_5_AUSF(AUSF_tid, idAUSF, idUDM, pk_CA, cert_AUSF, sk_AUSF, Rausf, SNName, idUE, supi, Rue1, Rprekey, pk_UE, Ksession, Kseaf)
+	    , In_S(<'SEAF_AUSF','SEAF','AUSF'>, idSN, idAUSF, <'seaf_key_confirm', hash(hash(<Kseaf, 'SEAF'>))>)]
+        --[
+	     Secret_supiAUSFConf(supi)     
+	   , Secret_KseafAUSFConf(Kseaf)
+	   , CommitConf(idAUSF, idSN, <'AUSF', 'SEAF', <'Kseaf', Kseaf>>)
+	   , CommitConf(idAUSF, idSN, <'AUSF', 'SEAF', <'supi', supi>>)
+	   , CommitConf(idAUSF, supi, <'AUSF', 'UE', <'idSN', idSN>>) 
+	   , CommitConf(idAUSF, supi, <'AUSF', 'UE', <'Kseaf', Kseaf>>) 
+	   , CommitConf(idAUSF, supi, <'AUSF', 'UE', <'supi', supi>>) 
+       , CommitConf(idAUSF, idUDM, <'AUSF', 'UDM', <'idSN', idSN>>) 
+       , CommitConf(idAUSF, idUDM, <'AUSF', 'UDM', <'supi', supi>>) 		
+	   , Honest(supi)
+	   , Honest(idAUSF)
+	   , Honest(idSN)
+	   , Honest(idUDM)
+	]->
+	[    Out_S(<'AUSF_UDM','AUSF','UDM'>, idAUSF, idUDM, <'succ_confirm', idSN, supi, 'Success'>)   //fix point three
+       , Out_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'ausf_key_confirm', hash(<Kseaf, 'AUSF'>)>)
+    ]  
+
+// -> Success confirmation
+rule UDM_receive_success_confirm[color=ff9999]:
+	[ St_1_UDM(UDM_tid, idUDM, sk_UDM, idAUSF, idUE, supi, idSN)
+	, In_S(<'AUSF_UDM','AUSF','UDM'>, idAUSF, idUDM, <'succ_confirm', idSN, supi, 'Success'>)
+	]
+	--[
+	    Secret_supiUDMConf(supi)  
+      , CommitConf(idUDM, idSN, <'UDM', 'SEAF', <'supi', supi>>)
+      , CommitConf(idUDM, idAUSF, <'UDM', 'AUSF', <'supi', supi>>)
+      , CommitConf(idUDM, supi, <'UDM', 'UE', <'idSN', idSN>>)
+      , CommitConf(idUDM, idAUSF, <'UDM', 'AUSF', <'idSN', idSN>>)
+      , Honest(supi)
+      , Honest(idSN)
+      , Honest(idAUSF)
+      , Honest(idUDM) 
+	]->
+	[]   
+
+// -> Key confirmation -> Key confirmation 
+rule seaf_key_confirmation_check[color=99bfbf]:
+    [ St_9_SEAF(SEAF_tid, idSN, SNName, conc_supi, idAUSF, idUDM, Rue1, Rausf, encry_Rprekey, encry_Handshake_AUSF, idUE, supi, Kseaf)
+	, In_S(<'SEAF_AUSF','AUSF','SEAF'>, idAUSF, idSN, <'ausf_key_confirm', hash(<Kseaf, 'AUSF'>)>)]
+    --[
+	    Secret_supiSEAFConf(supi)
+	  , Secret_KseafSEAFConf(Kseaf)
+	  , CommitConf(idSN, idAUSF, <'SEAF', 'AUSF', <'supi', supi>>)
+	  , CommitConf(idSN, idUDM, <'SEAF', 'UDM', <'supi', supi>>)
+      , CommitConf(idSN, idAUSF, <'SEAF', 'AUSF', <'Kseaf', Kseaf>>)
+	  , Honest(supi)
+	  , Honest(idAUSF)
+	  , Honest(idSN)
+	]->
+	[Out(hash(<Kseaf, 'SEAF'>))]
+
+// -> Key confirmation
+rule ue_receive_key_confirmation[color=00cc66]:       
+	[ 
+      St_5_UE(UE_tid, idUE, idUDM, idAUSF, pk_CA, cert_UE, supi, sk_UE, pk_UDM, Rue, Rue1, Rprekey, Rausf, pk_AUSF, Ksession, Handshake_AUSF, idSN, Kseaf) 
+    , In(hash(<Kseaf, 'SEAF'>))
+    ]
+	--[ 
+	    Secret_supiUEConf(supi)  
+	  , Secret_KseafUEConf(Kseaf)  
+      , CommitConf(supi, idUDM, <'UE', 'UDM', <'supi', supi>>)  
+      , CommitConf(supi, idUDM, <'UE', 'UDM', <'idSN', idSN>>) 
+	  , CommitConf(supi, idAUSF, <'UE', 'AUSF', <'supi', supi>>)    
+	  , CommitConf(supi, idAUSF, <'UE', 'AUSF', <'Kseaf', Kseaf>>)
+	  , CommitConf(supi, idAUSF, <'UE', 'AUSF', <'idSN', idSN>>)  
+      , CommitConf(supi, idSN, <'UE', 'SEAF', <'Kseaf', Kseaf>>)
+	  , CommitConf(supi, idSN, <'UE', 'SEAF', <'supi', supi>>)
+	  , CommitConf(supi, idSN, <'UE', 'SEAF', <'idSN', idSN>>)
+      , Honest(supi)
+      , Honest(idSN)
+      , Honest(idAUSF)
+      , Honest(idUDM)
+	  , Finished()
+	]->
+	[]  
+
+/************************************************************************/
+/*                           Executable Lemmas                          */
+/************************************************************************/  
+
+lemma executability_honest:     
+	exists-trace   
+	"   Ex #m.  Finished() @m 
+        & not (Ex C #r. Reveal(C)@r )
+		& (All #j #k. Assoc()@j &
+					  Assoc()@k ==> #j = #k)
+		& (All SNName1 SNName2 #j #k. ServNet(SNName1)@j &
+					  ServNet(SNName2)@k ==> #j = #k)
+        & (All AUSF AUSF2 #j #k. AUSF_ID(AUSF)@j &
+					  AUSF_ID(AUSF2)@k ==> #j = #k)
+		& (All S1 S2 ARPF1 ARPF2 #j #k. Subscribe(S1, ARPF1)@j &
+						Subscribe(S2, ARPF2)@k ==> #j = #k)
+		& (All SNName1 SNName2 #j #k. Start_SEAF_Session(SNName1)@j &
+				          Start_SEAF_Session(SNName2)@k ==> #j = #k) 
+		& (All UE1 UE2 #j #k. Start_UE_Session(UE1)@j &
+				          Start_UE_Session(UE2)@k ==> #j = #k) 
+		& (All HN1 HN2 #j #k. Start_AUSF_Session(HN1)@j &
+				      Start_AUSF_Session(HN2)@k ==> #j = #k)
+		& (All HN1 HN2 #j #k. Start_UDM_Session(HN1)@j &
+				      Start_UDM_Session(HN2)@k ==> #j = #k)
+	"
+
+/************************************************************************/
+/*      Security Lemmas with additional confirmation procedures         */
+/************************************************************************/
+// Secrecy Lemmas
+// Secrecy of SUPI 
+lemma secret_supi_UE_noRev [heuristic={T43}]:
+	all-traces
+	"All n #i. 
+		Secret_supiUEConf(n) @i 
+		==>
+		(not (Ex #j. K(n) @j)) 
+        | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	"
+
+lemma secret_supi_SEAF_noRev [heuristic={T43}]:
+	all-traces
+	"All n #i. 
+		Secret_supiSEAFConf(n) @i 
+		==>
+		(not (Ex #j. K(n) @j)) 
+        | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	"
+
+lemma secret_supi_AUSF_noRev [heuristic={T43}]:
+	all-traces
+	"All n #i. 
+		Secret_supiAUSFConf(n) @i 
+		==>
+		(not (Ex #j. K(n) @j)) 
+        | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	"
+
+lemma secret_supi_UDM_noRev [heuristic={T43}]:
+	all-traces
+	"All n #i. 
+		Secret_supiUDMConf(n) @i 
+		==>
+		(not (Ex #j. K(n) @j)) 
+        | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	"
+
+// Secrecy of the anchor key 
+lemma secret_Kseaf_UE_noRev [heuristic={T47}]:
+	all-traces
+	"All n #i. 
+		Secret_KseafUEConf(n) @i 
+		==>
+		(not (Ex #j. K(n) @j)) 
+		| ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i) 
+	"
+
+lemma secret_Kseaf_SEAF_noRev [heuristic={T47}]:
+	all-traces
+	"All n #i. 
+		Secret_KseafSEAFConf(n) @i 
+		==>
+		(not (Ex #j. K(n) @j)) 
+		| ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i) 
+	"
+
+lemma secret_Kseaf_AUSF_noRev [heuristic={T11}]: 
+	all-traces
+	"All n #i. 
+		Secret_KseafAUSFConf(n) @i 
+		==>
+		(not (Ex #j. K(n) @j)) 
+		| ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i) 
+	"
+
+
+// Authentication Lemmas 
+// These lemmas describe the type of agreement from the point of view of the A (e.g. UE)
+// with the B, on the term or identity in the scene that the attacker can reveal UE or not.
+// For example, Non_inject_agreement_UE_AUSF_idSN_noRev is the lemma that describe the
+// non-injective agreement betweeb UE and AUSF on the term idSN in the scene that 
+// the attacker can reveal dishonest UE and the additional confirmation is added.
+// Verify the the authentication properties with additional confirmation from UE's view  
+lemma Weak_agreement_UE_SEAF_noRev [heuristic={T55}]:
+    "All UE SEAF t #i. 
+     CommitConf(UE, SEAF, <'UE', 'SEAF', t>) @ i 
+     ==> (Ex t1 #j. Running(SEAF, UE, <'UE', 'SEAF', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Weak_agreement_UE_AUSF_noRev [heuristic={T51}]:
+    "All UE AUSF t #i. 
+     CommitConf(UE, AUSF, <'UE', 'AUSF', t>) @ i 
+     ==> (Ex t1 #j. Running(AUSF, UE, <'UE', 'AUSF', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Weak_agreement_UE_UDM_noRev [heuristic={T51}]:
+    "All UE UDM t #i. 
+     CommitConf(UE, UDM, <'UE', 'UDM', t>) @ i 
+     ==> (Ex t1 #j. Running(UDM, UE, <'UE', 'UDM', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Non_inject_agreement_UE_AUSF_idSN_noRev [heuristic={T51}]:
+    "All UE AUSF t #i. 
+     CommitConf(UE, AUSF, <'UE', 'AUSF', <'idSN', t>>) @ i 
+     ==> (Ex #j. Running(AUSF, UE, <'UE', 'AUSF', <'idSN', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Non_inject_agreement_UE_UDM_idSN_noRev [heuristic={T51}]:
+    "All UE UDM t #i. 
+     CommitConf(UE, UDM, <'UE', 'UDM', <'idSN', t>>) @ i 
+     ==> (Ex #j. Running(UDM, UE, <'UE', 'UDM', <'idSN', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Inject_agreement_UE_SEAF_Kseaf_noRev [heuristic={T55}]:
+    "All UE SEAF t #i. 
+     CommitConf(UE, SEAF, <'UE', 'SEAF', <'Kseaf', t>>) @ i 
+     ==> (Ex #j. Running(SEAF, UE, <'UE', 'SEAF', <'Kseaf', t>>) @ j
+         & j < i
+         & not (Ex A2 B2 #i2. CommitConf(A2,B2,<'UE', 'SEAF', <'Kseaf', t>>) @i2
+         & not (#i2 = #i)))
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Inject_agreement_UE_AUSF_Kseaf_noRev [heuristic={T51}]:
+    "All UE AUSF t #i. 
+     CommitConf(UE, AUSF, <'UE', 'AUSF', <'Kseaf', t>>) @ i 
+     ==> (Ex #j. Running(AUSF, UE, <'UE', 'AUSF', <'Kseaf', t>>) @ j
+         & j < i
+         & not (Ex A2 B2 #i2. CommitConf(A2,B2,<'UE', 'AUSF', <'Kseaf', t>>) @i2
+         & not (#i2 = #i)))
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+// Verify the the authentication properties with additional confirmation from SEAF's view
+lemma Weak_agreement_SEAF_UE_noRev [heuristic={T55}]:
+    "All SEAF UE t #i. 
+     CommitConf(SEAF, UE, <'SEAF', 'UE', t>) @ i 
+     ==> (Ex t1 #j. Running(UE, SEAF, <'SEAF', 'UE', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Weak_agreement_SEAF_AUSF_noRev [heuristic={T47}]:
+    "All SEAF AUSF t #i. 
+     CommitConf(SEAF, AUSF, <'SEAF', 'AUSF', t>) @ i 
+     ==> (Ex t1 #j. Running(AUSF, SEAF, <'SEAF', 'AUSF', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Weak_agreement_SEAF_UDM_noRev [heuristic=S]:
+    "All SEAF UDM t #i. 
+     CommitConf(SEAF, UDM, <'SEAF', 'UDM', t>) @ i 
+     ==> (Ex t1 #j. Running(UDM, SEAF, <'SEAF', 'UDM', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Non_inject_agreement_SEAF_AUSF_supi_noRev [heuristic={T47}]:
+    "All SEAF AUSF t #i. 
+     CommitConf(SEAF, AUSF, <'SEAF', 'AUSF', <'supi', t>>) @ i 
+     ==> (Ex #j. Running(AUSF, SEAF, <'SEAF', 'AUSF', <'supi', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "    
+
+lemma Non_inject_agreement_SEAF_UDM_supi_noRev [heuristic={T47}]:
+    "All SEAF UDM t #i. 
+     CommitConf(SEAF, UDM, <'SEAF', 'UDM', <'supi', t>>) @ i 
+     ==> (Ex #j. Running(UDM, SEAF, <'SEAF', 'UDM', <'supi', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 " 
+     
+lemma Inject_agreement_SEAF_UE_Kseaf_noRev [heuristic={T55}]:
+    "All SEAF UE t #i. 
+     CommitConf(SEAF, UE, <'SEAF', 'UE', <'Kseaf', t>>) @ i 
+     ==> (Ex #j. Running(UE, SEAF, <'SEAF', 'UE', <'Kseaf', t>>) @ j
+         & j < i
+         & not (Ex A2 B2 #i2. CommitConf(A2,B2,<'SEAF', 'UE', <'Kseaf', t>>) @i2
+         & not (#i2 = #i)))
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Inject_agreement_SEAF_AUSF_Kseaf_noRev [heuristic={T47}]:
+    "All SEAF AUSF t #i. 
+     CommitConf(SEAF, AUSF, <'SEAF', 'AUSF', <'Kseaf', t>>) @ i 
+     ==> (Ex #j. Running(AUSF, SEAF, <'SEAF', 'AUSF', <'Kseaf', t>>) @ j
+         & j < i
+         & not (Ex A2 B2 #i2. CommitConf(A2,B2,<'SEAF', 'AUSF', <'Kseaf', t>>) @i2
+         & not (#i2 = #i)))
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+// Verify the the authentication properties with additional confirmation from AUSF's view  
+lemma Weak_agreement_AUSF_UE_noRev [heuristic={T11}]:
+    "All AUSF UE t #i. 
+    CommitConf(AUSF, UE, <'AUSF', 'UE', t>) @ i 
+     ==> (Ex t1 #j. Running(UE, AUSF, <'AUSF', 'UE', t1>) @ j)
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 " 
+
+lemma Weak_agreement_AUSF_SEAF_noRev [heuristic={T47}]:
+    "All AUSF SEAF t #i. 
+    CommitConf(AUSF, SEAF, <'AUSF', 'SEAF', t>) @ i 
+     ==> (Ex t1 #j. Running(SEAF, AUSF, <'AUSF', 'SEAF', t1>) @ j)
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 " 
+
+lemma Weak_agreement_AUSF_UDM_noRev [heuristic={T47}]:
+    "All AUSF UDM t #i. 
+    CommitConf(AUSF, UDM, <'AUSF', 'UDM', t>) @ i 
+     ==> (Ex t1 #j. Running(UDM, AUSF, <'AUSF', 'UDM', t1>) @ j)
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Non_inject_agreement_AUSF_UE_idSN_noRev [heuristic={T55}]:
+    "All AUSF UE t #i. 
+    CommitConf(AUSF, UE, <'AUSF', 'UE', <'idSN', t>>) @ i 
+     ==> (Ex #j. Running(UE, AUSF, <'AUSF', 'UE', <'idSN', t>>) @ j)
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 " 
+     
+
+lemma Inject_agreement_AUSF_UE_Kseaf_noRev [heuristic={T55}]:
+    "All AUSF UE t #i. 
+    CommitConf(AUSF, UE, <'AUSF', 'UE', <'Kseaf', t>>) @ i 
+     ==> (Ex #j. Running(UE, AUSF, <'AUSF', 'UE', <'Kseaf', t>>) @ j
+         & j < i
+         & not (Ex A2 B2 #i2. CommitConf(A2,B2,<'AUSF', 'UE', <'Kseaf', t>>) @i2
+         & not (#i2 = #i)))
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 " 
+   
+lemma Non_inject_agreement_AUSF_SEAF_supi_noRev [heuristic={T47}]:
+    "All AUSF SEAF t #i. 
+    CommitConf(AUSF, SEAF, <'AUSF', 'SEAF', <'supi', t>>) @ i 
+     ==> (Ex #j. Running(SEAF, AUSF, <'AUSF', 'SEAF', <'supi', t>>) @ j)
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 " 
+
+lemma Inject_agreement_AUSF_SEAF_Kseaf_noRev [heuristic={T47}]:
+    "All AUSF SEAF t #i. 
+    CommitConf(AUSF, SEAF, <'AUSF', 'SEAF', <'Kseaf', t>>) @ i 
+     ==> (Ex #j. Running(SEAF, AUSF, <'AUSF', 'SEAF', <'Kseaf', t>>) @ j
+         & j < i
+         & not (Ex A2 B2 #i2. CommitConf(A2,B2,<'AUSF', 'SEAF', <'Kseaf', t>>) @i2
+         & not (#i2 = #i)))
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "   
+
+lemma Non_inject_agreement_AUSF_UDM_idSN_noRev [heuristic={T51}]:
+    "All AUSF UDM t #i. 
+    CommitConf(AUSF, UDM, <'AUSF', 'UDM', <'idSN', t>>) @ i 
+     ==> (Ex #j. Running(UDM, AUSF, <'AUSF', 'UDM', <'idSN', t>>) @ j)
+       | ( Ex C #r. Reveal(<'UE', C>)@r)
+	 " 
+
+lemma Non_inject_agreement_AUSF_UDM_supi_noRev [heuristic={T47}]:
+    "All AUSF UDM t #i. 
+    CommitConf(AUSF, UDM, <'AUSF', 'UDM', <'supi', t>>) @ i 
+     ==> (Ex #j. Running(UDM, AUSF, <'AUSF', 'UDM', <'supi', t>>) @ j)
+       | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 " 
+
+// Verify the the authentication properties with additional confirmation from UDM's view 
+lemma Weak_agreement_UDM_UE_noRev [heuristic={T16}]:
+    "All UDM UE t #i. 
+     CommitConf(UDM, UE, <'UDM', 'UE', t>) @ i 
+     ==> (Ex t1 #j. Running(UE, UDM, <'UDM', 'UE', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Weak_agreement_UDM_SEAF_noRev [heuristic={T47}]:
+    "All UDM SEAF t #i. 
+     CommitConf(UDM, SEAF, <'UDM', 'SEAF', t>) @ i 
+     ==> (Ex t1 #j. Running(SEAF, UDM, <'UDM', 'SEAF', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Weak_agreement_UDM_AUSF_noRev [heuristic={T47}]:
+    "All UDM AUSF t #i. 
+     CommitConf(UDM, AUSF, <'UDM', 'AUSF', t>) @ i 
+     ==> (Ex t1 #j. Running(AUSF, UDM, <'UDM', 'AUSF', t1>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Non_inject_agreement_UDM_UE_idSN_noRev [heuristic={T55}]:
+    "All UDM UE t #i. 
+     CommitConf(UDM, UE, <'UDM', 'UE', <'idSN', t>>) @ i 
+     ==> (Ex #j. Running(UE, UDM, <'UDM', 'UE', <'idSN', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+    "
+
+lemma Non_inject_agreement_UDM_SEAF_supi_noRev [heuristic={T47}]:
+    "All UDM SEAF t #i. 
+     CommitConf(UDM, SEAF, <'UDM', 'SEAF', <'supi', t>>) @ i 
+     ==> (Ex #j. Running(SEAF, UDM, <'UDM', 'SEAF', <'supi', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+lemma Non_inject_agreement_UDM_AUSF_supi_noRev [heuristic={T47}]:
+"All UDM AUSF t #i. 
+     CommitConf(UDM, AUSF, <'UDM', 'AUSF', <'supi', t>>) @ i 
+     ==> (Ex #j. Running(AUSF, UDM, <'UDM', 'AUSF', <'supi', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+ 
+lemma Non_inject_agreement_UDM_AUSF_idSN_noRev [heuristic={T47}]:
+    "All UDM AUSF t #i. 
+     CommitConf(UDM, AUSF, <'UDM', 'AUSF', <'idSN', t>>) @ i 
+     ==> (Ex #j. Running(AUSF, UDM, <'UDM', 'AUSF', <'idSN', t>>) @ j)
+	   | ( Ex C #r. Reveal(<'UE', C>)@r & Honest(C) @i)
+	 "
+
+/************************************************************************/
+/*                             Tactics                                  */
+/************************************************************************/
+tactic: T6
+presort: S
+    prio:
+        regex ".*!KU\( ~supi.*"
+    prio:
+        regex ".*!KU\( ~sk_(?!UE).*"
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*authResp_prekey"
+    prio:
+        regex ".*authReq_cert.*sign\("
+    prio:
+        regex ".*Cert_Channel"
+    prio:
+        regex ".*Use_EAP_TLS.*"
+    prio:
+        regex ".*!KU\( hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(.*"
+    prio:
+        regex ".*!KU\( KDF\(.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    deprio:
+        regex ".*!KU\( ~sk_UE.*"
+    deprio:
+        regex ".*!KU\( ~R.*"
+    deprio:
+        regex ".*!KU\( R.*"
+
+tactic: T10
+presort: S
+    prio:
+        regex ".*!KU\( KDF\(<Ksession.*"
+    prio:
+        regex ".*!KU\( ~sk_.*"
+    prio:
+        regex ".*!KU\( ~R.*"
+    prio:
+        regex ".*!KU\( pk\(~.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*Success.*"
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*Cert_Channel"
+    prio:
+        regex ".*Use_EAP_TLS.*"
+    prio:
+        regex ".*authResp_prekey"
+    prio:
+        regex ".*authResp_confirm"
+    prio:
+        regex ".*authReq_confirm"
+    prio:
+        regex ".*authReq_cert.*sign\("
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    prio:
+        regex ".*!KU\( hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(.*"
+    prio:
+        regex ".*!KU\( KDF\((?!<Ksession).*"
+    deprio:
+        regex ".*!KU\( R.*"
+
+
+tactic: T11
+presort: S
+    prio:
+        regex ".*!KU\( KDF\(<Ksession.*"
+    prio:
+        regex ".*!KU\( ~sk_.*"
+    prio:
+        regex ".*!KU\( ~supi.*"
+    prio:
+        regex ".*!KU\( ~R.*"
+    prio:
+        regex ".*!KU\( KDF\(.*"
+    prio:
+        regex ".*!KU\( pk\(~.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    prio:
+        regex ".*!KU\( hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(.*"
+    prio:
+        regex ".*!KU\( KDF\((?!<Ksession).*"
+    prio:
+        regex ".*Success.*"
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*Cert_Channel"
+    prio:
+        regex ".*Use_EAP_TLS.*"
+    prio:
+        regex ".*authResp_prekey"
+    prio:
+        regex ".*authResp_confirm"
+    prio:
+        regex ".*authReq_cert.*sign\("
+    deprio:
+        regex ".*!KU\( R.*"
+    deprio:
+        regex ".*authReq_confirm"
+
+tactic: T13
+presort: S
+    prio:
+        regex ".*!KU\( KDF\(<Ksession.*"
+    prio:
+        regex ".*!KU\( ~sk_.*"
+    prio:
+        regex ".*!KU\( ~supi.*"
+    prio:
+        regex ".*!KU\( ~R.*"
+    prio:
+        regex ".*\'Cert_Channel\'.*"
+    prio:
+        regex ".*\'AUSF_UDM\'.*"
+    prio:
+        regex ".*\'authResp\'.*"
+    prio:
+        regex ".*\'authReq\'.*"
+    prio:
+        regex ".*\'agr\'.*"
+    prio:
+        regex ".*\'air\'.*"
+    prio:
+        regex ".*\'authReq_cert\'.*"
+    prio:
+        regex ".*\'authReq_confirm\'.*"
+    prio:
+        regex ".*\'authResp_prekey\'.*"
+    prio:
+        regex ".*!KU\( KDF\(.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*!KU\( hash\((?:(?!pk\(x(\.\d+)*).)*\)[^\(\)]+$"
+    prio:
+        regex ".*!KU\( sign\((?:(?!pk\(x(\.\d+)*).)*\)[^\(\)]+$"
+    prio:
+        regex ".*!KU\( pk\(~(?!sk_UE).*"
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    prio:
+        regex ".*!KU\( KDF\((?!<Ksession).*"
+    prio:
+        regex ".*Success.*"
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*Use_EAP_TLS.*"
+    prio:
+        regex ".*authResp_prekey"
+    prio:
+        regex ".*authResp_confirm"
+    prio:
+        regex ".*authReq_cert.*"
+    deprio:
+        regex ".*!KU\( R.*"
+    deprio:
+        regex ".*authReq_confirm.*"
+    deprio:
+        regex ".*pk\(x(\.\d+)*.*"
+    deprio:
+        regex ".*!KU\( pk\(~sk_UE.*"
+
+tactic: T16
+presort: S
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*!KU\( KDF\(<Ksession.*"
+    prio:
+        regex ".*!KU\( ~sk_.*"
+    prio:
+        regex ".*!KU\( ~supi.*"
+    prio:
+        regex ".*!KU\( ~R.*"
+    prio:
+        regex ".*!KU\( aenc\(<~supi.*"
+    prio:
+        regex ".*\'Cert_Channel\'.*"
+    prio:
+        regex ".*\'AUSF_UDM\'.*"
+    prio:
+        regex ".*\'authResp\'.*"
+    prio:
+        regex ".*\'authReq\'.*"
+    prio:
+        regex ".*\'agr\'.*"
+    prio:
+        regex ".*\'air\'.*"
+    prio:
+        regex ".*\'authReq_cert\'.*"
+    prio:
+        regex ".*\'authReq_confirm\'.*"
+    prio:
+        regex ".*\'authResp_prekey\'.*"
+    prio:
+        regex ".*\'authReq_succ\'.*"
+    prio:
+        regex ".*\'authResp_confirm\'.*"
+    prio:
+        regex ".*!KU\( KDF\(.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*!KU\( hash\((?:(?!pk\(x(\.\d+)*).)*\)[^\(\)]+$"
+    prio:
+        regex ".*!KU\( sign\((?:(?!pk\(x(\.\d+)*).)*\)[^\(\)]+$"
+    prio:
+        regex ".*!KU\( pk\(~(?!sk_UE).*"
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    prio:
+        regex ".*!KU\( KDF\((?!<Ksession).*"
+    prio:
+        regex ".*Success.*"
+    prio:
+        regex ".*Use_EAP_TLS.*"
+    prio:
+        regex ".*authResp_prekey"
+    prio:
+        regex ".*authResp_confirm"
+    prio:
+        regex ".*authReq_cert.*"
+    deprio:
+        regex ".*!KU\( R.*"
+    deprio:
+        regex ".*authReq_confirm.*"
+    deprio:
+        regex ".*pk\(x(\.\d+)*.*"
+    deprio:
+        regex ".*!KU\( pk\(~sk_UE.*"
+
+tactic: T22
+presort: S
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*!KU\( KDF\(<Ksession.*"
+    prio:
+        regex ".*!KU\( ~sk_.*"
+    prio:
+        regex ".*!KU\( ~supi.*"
+    prio:
+        regex ".*!KU\( ~R.*"
+    prio:
+        regex ".*!KU\( aenc\(<~supi.*"
+    prio:
+        regex ".*\'Cert_Channel\'.*"
+    prio:
+        regex ".*\'AUSF_UDM\'.*"
+    prio:
+        regex ".*\'authResp\'.*"
+    prio:
+        regex ".*\'authReq\'.*"
+    prio:
+        regex ".*\'agr\'.*"
+    prio:
+        regex ".*\'air\'.*"
+    prio:
+        regex ".*\'authReq_cert\'.*"
+    prio:
+        regex ".*\'authReq_confirm\'.*"
+    prio:
+        regex ".*\'authResp_prekey\'.*"
+    prio:
+        regex ".*\'authReq_succ\'.*"
+    prio:
+        regex ".*\'authResp_confirm\'.*"
+    prio:
+        regex ".*!KU\( KDF\(.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*!KU\( hash\((?:(?!pk\(x(\.\d+)*).)*\)[^\(\)]+$"
+    prio:
+        regex ".*!KU\( sign\((?:(?!pk\(x(\.\d+)*).)*\)[^\(\)]+$"
+    prio:
+        regex ".*!KU\( pk\(~(?!sk_UE).*"
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    prio:
+        regex ".*!KU\( KDF\((?!<Ksession).*"
+    prio:
+        regex ".*Success.*"
+    prio:
+        regex ".*Use_EAP_TLS.*"
+    prio:
+        regex ".*authResp_prekey"
+    prio:
+        regex ".*authResp_confirm"
+    prio:
+        regex ".*authReq_cert.*"
+    deprio:
+        regex ".*!KU\( R.*"
+    deprio:
+        regex ".*authReq_confirm.*"
+    deprio:
+        regex ".*pk\(x(\.\d+)*.*"
+    deprio:
+        regex ".*!KU\( pk\(~sk_UE.*"
+
+tactic: T43
+presort: S
+    prio:
+        regex ".*!KU\( ~supi.*"
+    prio:
+        regex ".*!KU\( ~sk_(?!UE).*"
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*authResp_prekey"
+    prio:
+        regex ".*authReq_cert.*sign\("
+    prio:
+        regex ".*Cert_Channel"
+    prio:
+        regex ".*Use_EAP_TLS.*"
+    prio:
+        regex ".*ausf_key_confirm.*hash\(<Kseaf.*"
+    prio:
+        regex ".*\'authReq_succ\',.*\'Success\'.*"
+    prio:
+        regex ".*!KU\( hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(.*"
+    prio:
+        regex ".*!KU\( KDF\(.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    deprio:
+        regex ".*!KU\( ~sk_UE.*"
+    deprio:
+        regex ".*!KU\( ~R.*"
+    deprio:
+        regex ".*!KU\( R.*"
+
+tactic: T47
+presort: S
+    prio:
+        regex ".*!KU\( ~sk_.*"
+    prio:
+        regex ".*Cert_Channel"
+    prio:
+        regex ".*!KU\( PRF\(~.*"
+    prio:
+        regex ".*!KU\( ~R.*"
+    deprio:
+        regex "(?:(?!Cert_Channel).)*\)[^\(\)]+$pk\(x.*"
+
+tactic: T51
+presort: s
+    prio:
+        regex ".*Commit.*"
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*Cert_Channel.*"
+    prio:
+        regex ".*!KU\( ~sk_.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*authReq_confirm.*"
+    prio:
+        regex ".*agresp.*"
+    prio:
+        regex ".*authReq_cert.*"
+    prio:
+        regex ".*!KU\( ~Rprekey.*"
+    prio:
+        regex ".*!KU\( aenc\(.*"
+    prio:
+        regex ".*!KU\( hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(<\$idAUSF,.*"
+    prio:
+        regex ".*!KU\( sign\(<\$idUE,.*"
+    prio:
+        regex ".*authResp_prekey.*"
+    prio:
+        regex ".*!KU\( KDF\(.*"
+    prio:
+        regex ".*!KU\( ~Rausf.*"
+    
+tactic: T55
+presort: s 
+    prio:
+        regex ".*St_.*"
+    prio:
+        regex ".*!KU\( ~sk_A.*"
+    prio:
+        regex ".*!KU\( ~sk_UE.*"
+    prio:
+        regex ".*!KU\( ~sk_CA.*"
+    prio:
+        regex ".*!KU\( ~sk_UDM.*"
+    prio:
+        regex ".*certResp.*"
+    prio:
+        regex ".*certReq.*"
+    prio:
+        regex ".*\'authReq_succ\'.*"
+    prio:
+        regex ".*\'authReq_confirm\'.*"
+    prio:
+        regex ".*!KU\( KDF\(PRF\(.*"
+    prio:
+        regex ".*!KU\( PRF\(.*"
+    prio:
+        regex ".*\'agresp\'.*"
+    prio:
+        regex ".*\'authReq_cert\'.*"
+    prio:
+        regex ".*!KU\( ~Rprekey.*"
+    prio:
+        regex ".*!KU\( Rprekey.*"
+    prio:
+        regex ".*!KU\( aenc\(~Rprekey.*"
+    prio:
+        regex ".*!KU\( hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(hash\(.*"
+    prio:
+        regex ".*!KU\( sign\(<\$idUE.*"
+    prio:
+        regex ".*!KU\( sign\(<idUE.*"
+    prio:
+        regex ".*!KU\( PRF\(PRF\(.*"
+    prio:
+        regex ".*!KU\( sign\(<\$idAUSF.*"
+    prio:
+        regex ".*\'authResp_prekey\'.*"
+    prio:
+        regex ".*\'seaf_key_confirm\'.*"
+
+end
